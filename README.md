@@ -1,1 +1,3 @@
-# rqt
+# Curios.
+
+Random creations or discoveries.
