@@ -358,7 +358,6 @@ tms
 tst
 tms
 tch
-C:\Users\david.richmond\OneDrive - Asurion\Scripts\Azure\Chat\Send-DRChatMessage.ps1
 tch
 tst
 tms
