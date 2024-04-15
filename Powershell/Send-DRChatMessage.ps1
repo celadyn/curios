@@ -15,19 +15,23 @@ demo to-chat id:
 
 #>
 
-Connect-MgGraph # cannot use application perms, since it's user specific only. unless teams admin ;)
+Connect-MgGraph -NoWelcome # cannot use application perms, since it's user specific only. unless teams admin ;)
 
 
 function Import-TeamsChats {
+    [cmdletbinding(DefaultParameterSetName = 'Top')]
     [Alias('tch')]
     param (
-        [parameter()]
+        [parameter(ParameterSetName = 'Top')]
         [ValidateRange(1,50)]
-        [int]$Count = 20
+        [int]$Count = 50
         ,
         [switch]$Quiet
         ,
         [switch]$Passthru
+        ,
+        [Parameter(ParameterSetName = 'All')]
+        [switch]$All
     )
 
     $ErrorActionPreference = "Stop"
@@ -38,22 +42,45 @@ function Import-TeamsChats {
     }
 
     #if (!$ChatList) {
-        try {
-            $global:TeamsChatObjects = Get-MgChat -Top $Count -ExpandProperty LastMessagePreview,Members -Filter "chatType eq 'oneOnOne' or chatType eq 'group'"
+        try {            
+            
+            # first, get chats with extended properties to save a TON of time later
+
+            $GetMgChatSplat = @{
+                ExpandProperty = "lastMessagePreview,members"
+                #Filter = "chatType eq 'oneOnOne' or chatType eq 'group'"
+                OrderBy = "lastMessagePreview/createdDateTime desc"
+            }
+
+            if ($All) {
+                $GetMgChatSplat.Add("All",$true)
+                Write-Host -ForegroundColor DarkYellow "Importing ALL chats - this may take quite some time."
+            } else {
+                $GetMgChatSplat.Add("Top",$Count)
+            }
+            
+
+            $global:TeamsChatObjects = Get-MgChat @GetMgChatSplat
 
             Write-Host -ForegroundColor Cyan "Found $($TeamsChatObjects.count) chats."
 
             $global:TeamsChatList = foreach ($Chat in $TeamsChatObjects) {
-                switch -regex  ($Chat.ChatType) {
+                switch -regex ($Chat.ChatType) {
                     "oneOnOne" {
                         $OutSymbol = "1"
                         $OutColor = "Magenta"
                         #old: $ChatMembers = Get-MgChatMember -ChatId $Chat.id | Where-Object {$_.displayname -ne 'Richmond, David'}
                         $ChatMembers = $Chat.Members | Where-Object {$_.additionalproperties['userId'] -ne $TeamsMe.Id}
-                        $ChatMembersDisplayName = $ChatMembers.DisplayName -join ";"
+                        $ChatMembersDisplayName = if (($ChatMembers | Measure-Object).Count -eq 0) {
+                            "$($Chat.LastMessagePreview.from.application.displayname) (App)"
+                        } else {
+                            $ChatMembers.DisplayName -join ";"
+                        }
+                        
                         [pscustomobject]@{
-                            Recipient = $ChatMembersDisplayName
-                            LastMessage = $Chat.LastMessagePreview.Body.Content
+                            Label = $ChatMembersDisplayName
+                            LastMessageTime = $Chat.LastMessagePreview.CreatedDateTime
+                            LastMessage = $Chat.LastMessagePreview.Body.Content -replace '<(img|attachment) [^>]+>','[$1]' -replace '<[^>]+>|\&nbsp;',''
                             ChatID = $Chat.id
                             Chat = $Chat
                         }
@@ -65,15 +92,20 @@ function Import-TeamsChats {
                         $ChatMembers = $Chat.Members | Where-Object {$_.additionalproperties['userId'] -ne $TeamsMe.Id}
                         $Recipient = if ([string]::IsNullOrEmpty($Chat.Topic)) {$ChatMembers.DisplayName} else {$Chat.Topic}
                         [pscustomobject]@{
-                            Recipient = $Recipient
-                            LastMessage = $Chat.LastMessagePreview.Body.Content
+                            Label = $Recipient
+                            LastMessageTime = $Chat.LastMessagePreview.CreatedDateTime
+                            LastMessage = $Chat.LastMessagePreview.Body.Content -replace '<(img|attachment) [^>]+>','[$1]' -replace '<[^>]+>|\&nbsp;',''
                             ChatID = $Chat.id
                             Chat = $Chat
                         }
                     }
+
+                    default {
+                        Write-Warning "Skipping chat with unhandled type $($Chat.ChatType)"
+                    }
                 }#switch
 
-                if (!$Quiet) {Write-Host $OutSymbol -ForegroundColor $OutColor -NoNewline}
+                if ($VerbosePreference -eq "Continue") {Write-Host $OutSymbol -ForegroundColor $OutColor -NoNewline}
                 Write-Verbose "CHAT: Type:$($Chat.ChatType) | Members: $($ChatMembersDisplayName)"
             }#foreach-chat
 
@@ -93,7 +125,7 @@ function Select-TeamsChatThread {
     [cmdletbinding()]
     param ()
     
-    $SelectedChat = $global:TeamsChatList | Out-GridView -PassThru
+    $SelectedChat = $global:TeamsChatList | Sort-Object -Property "LastMessageTime" -Descending | Out-GridView -PassThru
     if ($SelectedChat) {
         $global:TeamsSelectedChat = $SelectedChat
         Write-Host -ForegroundColor Green "Selected chat $($SelectedChat.Recipient) - $($SelectedChat.ChatID)"
@@ -155,22 +187,22 @@ function Get-DRMgChatMessage {
                 default {throw "No chat ID available from $SingleChat."}
             }#switch
 
-            $ChatMessages = try {Get-MgChatMessage -ChatId $ChatID -top $Count} catch {throw $_}
+            $ChatMessages = try {Get-MgChatMessage -ChatId $ChatID -Top $Count} catch {throw $_}
 
 
 
             if ($ChatMessages) {
 
-                $ChatMessages = $ChatMessages | Sort-Object CreatedDateTime -Descending
+                $ChatMessages = $ChatMessages | Sort-Object CreatedDateTime #-Descending
     
                 foreach ( $Message in $ChatMessages ) {
                     [pscustomobject]@{
-                        Chat = $SingleChat
-                        ChatID = $ChatID
+                        From = $Message.from.user.displayname
                         Timestamp = $Message.CreatedDateTime
                         TimeAgo = "$(New-TimeSpan -Start $Message.CreatedDateTime -end ([datetime]::Now))"
-                        From = $Message.from.user.displayname
-                        Content = $Message.body.content
+                        Content = $Message.body.content -replace '<(img|attachment) [^>]+>','[$1]' -replace '<[^>]+>|\&nbsp;',''
+                        Chat = $SingleChat
+                        ChatID = $ChatID
                     }
                 }#foreach-message
             } else {
