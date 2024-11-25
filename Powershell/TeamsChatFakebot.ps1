@@ -1,5 +1,9 @@
 ﻿<# 
 
+interesting ideas:
+https://stackoverflow.com/questions/72051935/is-there-any-way-to-export-the-contents-of-my-teams-chats-for-one-day-by-chat-a
+
+
 demo censorship: 
     replace all and delete: 
 
@@ -14,9 +18,8 @@ demo to-chat id:
     19:@thread.v2
 
 #>
-
-Connect-MgGraph -NoWelcome # cannot use application perms, since it's user specific only. unless teams admin ;)
-
+# cannot use application perms, since it's user specific only. unless teams admin ;)
+Connect-MgGraph -NoWelcome -Scopes Chat.ReadWrite -UseDeviceCode   
 
 function Import-TeamsChats {
     [cmdletbinding(DefaultParameterSetName = 'Top')]
@@ -69,7 +72,6 @@ function Import-TeamsChats {
                     "oneOnOne" {
                         $OutSymbol = "1"
                         $OutColor = "Magenta"
-                        #old: $ChatMembers = Get-MgChatMember -ChatId $Chat.id | Where-Object {$_.displayname -ne 'Richmond, David'}
                         $ChatMembers = $Chat.Members | Where-Object {$_.additionalproperties['userId'] -ne $TeamsMe.Id}
                         $ChatMembersDisplayName = if (($ChatMembers | Measure-Object).Count -eq 0) {
                             "$($Chat.LastMessagePreview.from.application.displayname) (App)"
@@ -201,8 +203,9 @@ function Get-DRMgChatMessage {
                         Timestamp = $Message.CreatedDateTime
                         TimeAgo = "$(New-TimeSpan -Start $Message.CreatedDateTime -end ([datetime]::Now))"
                         Content = $Message.body.content -replace '<(img|attachment) [^>]+>','[$1]' -replace '<[^>]+>|\&nbsp;',''
-                        Chat = $SingleChat
                         ChatID = $ChatID
+                        Chat = $SingleChat
+                        Message = $Message
                     }
                 }#foreach-message
             } else {
@@ -302,9 +305,7 @@ function Out-Teams {
 
 
 
-break
-
-$message = "<b>USER</b>:`r`n<pre>$inputfull</pre>`r`n`r`n<b>AIREPLY</b>:`r`n<pre>$aireply</pre>"
+#$message = "<b>USER</b>:`r`n<pre>$inputfull</pre>`r`n`r`n<b>AIREPLY</b>:`r`n<pre>$aireply</pre>"
 
 
 
@@ -318,7 +319,7 @@ function Get-RecentTeamsChatMessagesWithSNNumbers {
         ,
         $MessageCount = 20
         ,
-        [switch]$RefreshChatStore
+        [switch]$UseChatCache
     )
 
     begin {
@@ -327,14 +328,14 @@ function Get-RecentTeamsChatMessagesWithSNNumbers {
 
     process {
 
-        if ($RefreshChatStore) {
-            Import-TeamsChats -Count $ChatCount
+        Write-Host -Fore Cyan "Fetching chats..."
+        if ($UseChatCache) {
+            $ChatsToCheck = $global:TeamsChatList | Select-Object -First $ChatCount
+        } else {
+            $ChatsToCheck = Import-TeamsChats -Count $ChatCount -Passthru
         }
 
-        $TeamsChats = $global:TeamsChatList | Select-Object -First $ChatCount
-        
-        
-        $ChatMessages = foreach ($TeamsChat in $TeamsChats) {
+        $ChatMessages = foreach ($TeamsChat in $ChatsToCheck) {
             Get-DRMgChatMessage -Chat $TeamsChat -Count $MessageCount
         }
 
@@ -344,12 +345,15 @@ function Get-RecentTeamsChatMessagesWithSNNumbers {
                 $FoundSNItemNumbers = Find-SNItemNumber $MessageContent -Quiet
                 if ($FoundSNItemNumbers) {
                     $Message | Add-Member -MemberType NoteProperty -Name "SNItems" -Value $FoundSNItemNumbers -PassThru
-
                 }
             }
         }        
     
-        $ChatMessagesWithSNItems
+        if (($ChatMessagesWithSNItems | Measure-Object).Count -gt 0) {
+            $ChatMessagesWithSNItems
+        } else {
+            Write-Warning "No chat messages with SN item numbers found :("
+        }
     }
 }#function
 
@@ -369,6 +373,8 @@ function Send-SNItemInfoToTeamsChat {
         
     }
 }
+
+break
 
 
 
